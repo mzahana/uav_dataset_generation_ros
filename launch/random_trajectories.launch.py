@@ -60,7 +60,7 @@ def generate_launch_description():
         launch_arguments={
             'mavros_namespace' :ns+'/mavros',
             'tgt_system': '1',
-            'fcu_url': 'udp://:14542@127.0.0.1:14559',
+            'fcu_url': 'udp://:14540@127.0.0.1:14557',
             'pluginlists_yaml': plugins_file_path,
             'config_yaml': config_file_path,
             'base_link_frame': 'target/base_link',
