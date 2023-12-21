@@ -21,11 +21,13 @@ from cv_bridge import CvBridge
 import csv
 
 
+
+            
 class OffboardControl(Node):
 
     def __init__(self):
         super().__init__('random_trajectories_node')
-
+       
         self.declare_parameter('system_id', 1)
         self.sys_id_ = self.get_parameter('system_id').get_parameter_value().integer_value
 
@@ -54,9 +56,15 @@ class OffboardControl(Node):
         self.declare_parameter('traj_directory', '/home/user/shared_volume/gazebo_trajectories/')
         self.traj_directory_ = self.get_parameter('traj_directory').get_parameter_value().string_value
 
+        self.declare_parameter('rgb_image_directory', '/home/user/shared_volume/gazebo_trajectories/rbg_images')
+        self.rgb_img_directory_ = self.get_parameter('rgb_image_directory').get_parameter_value().string_value
+
         self.declare_parameter('file_name', 'gazebo_trajectory')
         self.file_name_ = self.get_parameter('file_name').get_parameter_value().string_value
 
+        self.create_folder(self.traj_directory_)
+        self.create_folder(self.rgb_img_directory_)
+        
         self.traj_objects_=[]
         self.traj_objects_.append(Circle3D(np.array([0,0,1]), np.array([0,0,1]), radius=1, omega=0.5))
         self.traj_objects_.append(Infinity3D(np.array([0,0,1]), np.array([0,0,1]), radius=1, omega=0.5))
@@ -143,6 +151,10 @@ class OffboardControl(Node):
 
         self.vehicle_path_msg_ = Path()
         self.setpoint_path_msg_ = Path()
+    
+    def create_folder(self, directory_path):
+        if not os.path.exists(directory_path):
+            os.makedirs(directory_path)
 
     def __del__(self):
         self.file_.close()
@@ -157,6 +169,7 @@ class OffboardControl(Node):
         self.image_ = msg
         cv_image = CvBridge().imgmsg_to_cv2(msg, "bgr8")  # Convert ROS Image message to OpenCV format
         self.cv_image_ = cv_image
+    
 
     def create_arrow_marker(self, id, tail, vector):
         msg = Marker()
@@ -365,7 +378,7 @@ class OffboardControl(Node):
         ty = self.odom_.pose.pose.position.y
         tz = self.odom_.pose.pose.position.z
         image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}.png"
-        cv2.imwrite(os.path.join(self.traj_directory_, image_name), self.cv_image_)
+        cv2.imwrite(os.path.join(self.rgb_img_directory_, image_name), self.cv_image_)
 
         # TODO Save actual poision in CSV file
         self.csv_writer_.writerow([t,tx,ty,tz, image_name])
