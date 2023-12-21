@@ -14,7 +14,10 @@ from visualization_msgs.msg import Marker
 from mavros_msgs.msg import State, PositionTarget
 
 from time import time, sleep
-
+from sensor_msgs.msg import Image
+import cv2
+import os
+from cv_bridge import CvBridge
 import csv
 
 
@@ -79,8 +82,9 @@ class OffboardControl(Node):
         self.file_ = open(self.csv_file_, 'w', newline='')
         self.csv_writer_ = csv.writer(self.file_)
         # Write the header
-        self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz"])
-        
+        self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz", "image_name"])
+
+
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -103,6 +107,7 @@ class OffboardControl(Node):
         )
 
         self.odom_ = Odometry() # latest odom
+        self.image_ = Image() # latest image
 
         self.status_sub_ = self.create_subscription(
             State,
@@ -114,6 +119,12 @@ class OffboardControl(Node):
             Odometry,
             'mavros/local_position/odom',
             self.odomCallback,
+            qos_profile_sensor_data)
+        
+        self.image_sub_ = self.create_subscription(
+            Image,
+            '/target/image',
+            self.imageCallback,
             qos_profile_sensor_data)
         
         self.vehicle_path_pub_ = self.create_publisher(Path, 'offboard_visualizer/vehicle_path', 10)
@@ -141,6 +152,11 @@ class OffboardControl(Node):
 
     def odomCallback(self, msg: Odometry):
         self.odom_ = msg
+
+    def imageCallback(self, msg: Image):
+        self.image_ = msg
+        cv_image = CvBridge().imgmsg_to_cv2(msg, "bgr8")  # Convert ROS Image message to OpenCV format
+        self.cv_image_ = cv_image
 
     def create_arrow_marker(self, id, tail, vector):
         msg = Marker()
@@ -348,9 +364,13 @@ class OffboardControl(Node):
         tx = self.odom_.pose.pose.position.x
         ty = self.odom_.pose.pose.position.y
         tz = self.odom_.pose.pose.position.z
+        image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}.png"
+        cv2.imwrite(os.path.join(self.traj_directory_, image_name), self.cv_image_)
+
         # TODO Save actual poision in CSV file
-        self.csv_writer_.writerow([t,tx,ty,tz])
-            
+        self.csv_writer_.writerow([t,tx,ty,tz, image_name])
+        self.offboard_setpoint_counter_ += 1
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -365,3 +385,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
