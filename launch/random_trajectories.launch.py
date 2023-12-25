@@ -13,8 +13,8 @@ def generate_launch_description():
     ld = LaunchDescription()
 
     # Node for Drone 2
-    model_name = {'gz_model_name': 'x500'}
-    autostart_id = {'px4_autostart_id': '4001'}
+    model_name = {'gz_model_name': 'x500_d435'}
+    autostart_id = {'px4_autostart_id': '4020'}
     instance_id = {'instance_id': '0'}
     xpos = {'xpos': '4.0'}
     ypos = {'ypos': '0.0'}
@@ -79,7 +79,23 @@ def generate_launch_description():
         arguments=[str(xpos['xpos']), str(ypos['ypos']), '0', '0', '0', '0', map_frame, ns+'/'+odom_frame],
     )
 
-    
+    # Transport rgb and depth images from GZ topics to ROS topics    
+    ros_gz_bridge = Node(
+        package='ros_gz_bridge',
+        name='ros_bridge_node_depthcam',
+        executable='parameter_bridge',
+        arguments=['/d435/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
+                   '/d435/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+                   '/d435/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked',
+                   '/d435/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+                   '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+
+                   '--ros-args', '-r', '/d435/depth_image:='+ns+'/depth_image',
+                   '-r', '/d435/image:='+ns+'/image',
+                   '-r', '/d435/points:='+ns+'/points',
+                   '-r', '/d435/camera_info:='+ns+'/camera_info'
+                   ],
+    )    
     random_trajectories_node = Node(
         package='uav_dataset_generation_ros',
         executable='execute_random_trajectories',
@@ -107,5 +123,5 @@ def generate_launch_description():
     ld.add_action(map2pose_tf_node)
     ld.add_action(mavros_launch)
     ld.add_action(random_trajectories_node)
-
+    ld.add_action(ros_gz_bridge)
     return ld
