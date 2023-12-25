@@ -26,11 +26,15 @@ from message_filters import ApproximateTimeSynchronizer
 
             
 class OffboardControl(Node):
-    QUEUE_SIZE = 50
+    QUEUE_SIZE = 10
 
     def __init__(self):
         super().__init__('random_trajectories_node')
-       
+        # Initialize previous timestamps to None or any initial value appropriate for your context
+        self.previous_depth_timestamp = 0.0
+        self.previous_img_timestamp = 0.0
+        self.previous_odom_timestamp = 0.0
+
         self.declare_parameter('system_id', 1)
         self.sys_id_ = self.get_parameter('system_id').get_parameter_value().integer_value
 
@@ -121,7 +125,7 @@ class OffboardControl(Node):
             depth=1
         )
         sensor_qos_profile = QoSProfile(
-            depth=50,  # A larger queue size to handle high-frequency sensor data
+            depth=10,  # A larger queue size to handle high-frequency sensor data
             reliability=ReliabilityPolicy.BEST_EFFORT,  # Suitable for high-throughput data
             durability=DurabilityPolicy.VOLATILE,  # Only interested in the most recent values
             history=HistoryPolicy.KEEP_LAST  # Keep only a number of latest samples defined by the depth
@@ -156,7 +160,7 @@ class OffboardControl(Node):
         #     qos_profile_sensor_data)
         
         # Setpoint frequency
-        timer_period = 0.02  # seconds
+        timer_period = 0.1  # seconds
         self.cmd_timer_ = self.create_timer(timer_period, self.cmdloopCallback)
         self.odom_sub_ = message_filters.Subscriber(
             self,
@@ -174,7 +178,7 @@ class OffboardControl(Node):
         self.time_synchronizer = ApproximateTimeSynchronizer(
             [self.odom_sub_, self.rgb_sub_, self.depth_sub_],
             self.QUEUE_SIZE,
-            slop=0.02  # Adjust the slop value according to the acceptable time difference
+            slop=0.15  
         )
 
         self.time_synchronizer.registerCallback(self.dataCallback)
@@ -227,13 +231,52 @@ class OffboardControl(Node):
         cv2.imwrite(os.path.join(directory, image_name), cv_image)   
     
     def dataCallback(self, odom_msg, img_msg, depth_msg):
-        # self.get_logger().info(f"Depth timestamp: {depth_msg.header.stamp}")
         self.odom_ = odom_msg
-        
         self.rgb_image_ = img_msg
-
-
         self.depth_image_ = depth_msg
+
+        current_depth_timestamp = (depth_msg.header.stamp.sec) + \
+                                float(depth_msg.header.stamp.nanosec)/1e9
+        current_img_timestamp = (img_msg.header.stamp.sec) + \
+                                float(img_msg.header.stamp.nanosec)/1e9
+        current_odom_timestamp = (odom_msg.header.stamp.sec) + \
+                                float(odom_msg.header.stamp.nanosec)/1e9
+        
+        threshold = 0.001
+        if abs(current_depth_timestamp - self.previous_depth_timestamp or 
+            current_img_timestamp - self.previous_img_timestamp or 
+            current_odom_timestamp - self.previous_odom_timestamp) >= threshold:
+
+            t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
+            tx = self.odom_.pose.pose.position.x
+            ty = self.odom_.pose.pose.position.y
+            tz = self.odom_.pose.pose.position.z
+
+            self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
+            self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
+
+            cv_image = CvBridge().imgmsg_to_cv2(self.rgb_image_, "bgr8")
+            self.save_image(cv_image, self.rgb_img_directory_, "rgb")
+
+            cv_image = CvBridge().imgmsg_to_cv2(self.depth_image_, "passthrough")
+            self.save_image(cv_image, self.depth_img_directory_, "depth")
+
+            # Save actual position in CSV file only if the timestamp condition is met
+            self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name])
+            self.offboard_setpoint_counter_ += 1
+
+
+        # Log the unique timestamps
+        self.get_logger().info(f"Depth timestamp: {current_depth_timestamp}")
+        self.get_logger().info(f"Image timestamp: {current_img_timestamp}")
+        self.get_logger().info(f"Odom timestamp: {current_odom_timestamp}")
+
+
+        # Update previous timestamps
+        self.previous_depth_timestamp = current_depth_timestamp
+        self.previous_img_timestamp = current_img_timestamp
+        self.previous_odom_timestamp = current_odom_timestamp
+
 
 
 
@@ -439,23 +482,23 @@ class OffboardControl(Node):
 
         self.setpoint_path_pub_.publish(self.setpoint_path_msg_)
 
-        t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
-        tx = self.odom_.pose.pose.position.x
-        ty = self.odom_.pose.pose.position.y
-        tz = self.odom_.pose.pose.position.z
+        # t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
+        # tx = self.odom_.pose.pose.position.x
+        # ty = self.odom_.pose.pose.position.y
+        # tz = self.odom_.pose.pose.position.z
 
-        self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
-        self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
+        # self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
+        # self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
         
-        cv_image = CvBridge().imgmsg_to_cv2(self.rgb_image_, "bgr8")  
-        self.save_image(cv_image, self.rgb_img_directory_, "rgb")
+        # cv_image = CvBridge().imgmsg_to_cv2(self.rgb_image_, "bgr8")  
+        # self.save_image(cv_image, self.rgb_img_directory_, "rgb")
         
-        cv_image = CvBridge().imgmsg_to_cv2(self.depth_image_, "passthrough")  
-        self.save_image(cv_image, self.depth_img_directory_, "depth")
+        # cv_image = CvBridge().imgmsg_to_cv2(self.depth_image_, "passthrough")  
+        # self.save_image(cv_image, self.depth_img_directory_, "depth")
        
-        # TODO Save actual poision in CSV file
-        self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name])
-        self.offboard_setpoint_counter_ += 1
+        # # TODO Save actual poision in CSV file
+        # self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name])
+        # self.offboard_setpoint_counter_ += 1
 
 
 def main(args=None):
