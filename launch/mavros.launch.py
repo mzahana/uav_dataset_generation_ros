@@ -111,6 +111,7 @@ def generate_launch_description():
                 {'base_link_frame_id': base_link_frame},
                 {'odom_frame_id': odom_frame},
                 {'map_frame_id': map_frame},
+                {"use_sim_time": True},
                 LaunchConfiguration('pluginlists_yaml'),
                 LaunchConfiguration('config_yaml')
         ]

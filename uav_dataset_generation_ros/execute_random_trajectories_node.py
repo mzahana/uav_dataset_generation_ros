@@ -19,15 +19,24 @@ import cv2
 import os
 from cv_bridge import CvBridge
 import csv
-
-
+import message_filters
+from message_filters import ApproximateTimeSynchronizer
+from sensor_msgs.msg import Imu
+from sensor_msgs.msg import NavSatFix
 
             
 class OffboardControl(Node):
+    QUEUE_SIZE = 10
 
     def __init__(self):
         super().__init__('random_trajectories_node')
-       
+        # Initialize previous timestamps to None or any initial value appropriate for your context
+        self.previous_depth_timestamp = 0.0
+        self.previous_img_timestamp = 0.0
+        self.previous_odom_timestamp = 0.0
+        self.previous_imu_timestamp = 0.0
+        self.previous_gps_timestamp = 0.0
+
         self.declare_parameter('system_id', 1)
         self.sys_id_ = self.get_parameter('system_id').get_parameter_value().integer_value
 
@@ -94,7 +103,10 @@ class OffboardControl(Node):
         self.file_ = open(self.csv_file_, 'w', newline='')
         self.csv_writer_ = csv.writer(self.file_)
         # Write the header
-        self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz", "image_name", "depth_image"])
+        self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz", "image_name", "depth_image", "orientation",
+                                 "angular_vel_x", "angular_vel_y", "angular_vel_z",
+                                 "linear_acc_x","linear_acc_y","linear_acc_z",
+                                  "latitude", "longitude", "altitude"])
 
 
         qos_profile = QoSProfile(
@@ -117,11 +129,17 @@ class OffboardControl(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
-
+        sensor_qos_profile = QoSProfile(
+            depth=10,  # A larger queue size to handle high-frequency sensor data
+            reliability=ReliabilityPolicy.BEST_EFFORT,  # Suitable for high-throughput data
+            durability=DurabilityPolicy.VOLATILE,  # Only interested in the most recent values
+            history=HistoryPolicy.KEEP_LAST  # Keep only a number of latest samples defined by the depth
+        )
         self.odom_ = Odometry() # latest odom
         self.rgb_image_ = Image() # latest image
         self.depth_image_ = Image() # latest image
-
+        self.imu_ = Imu()
+        self.gps_ = NavSatFix()
 
         self.status_sub_ = self.create_subscription(
             State,
@@ -129,32 +147,63 @@ class OffboardControl(Node):
             self.vehicleStatusCallback,
             qos_profile_transient)
         
-        self.odom_sub_ = self.create_subscription(
+        # self.odom_sub_ = self.create_subscription(
+        #     Odometry,
+        #     'mavros/local_position/odom',
+        #     self.odomCallback,
+        #     qos_profile_sensor_data)
+        
+        # self.rgb_image_ = self.create_subscription(
+        #     Image,
+        #     '/target/image',
+        #     self.imageCallback,
+        #     qos_profile_sensor_data)
+        
+        # self.depth_image_ = self.create_subscription(
+        #     Image,
+        #     '/target/depth_image',
+        #     self.depthCallback,
+        #     qos_profile_sensor_data)
+        
+        # Setpoint frequency
+        timer_period = 0.1  # seconds
+        self.cmd_timer_ = self.create_timer(timer_period, self.cmdloopCallback)
+        self.odom_sub = message_filters.Subscriber(
+            self,
             Odometry,
-            'mavros/local_position/odom',
-            self.odomCallback,
-            qos_profile_sensor_data)
-        
-        self.rgb_image_ = self.create_subscription(
+            'mavros/local_position/odom',qos_profile=sensor_qos_profile)
+        self.rgb_sub = message_filters.Subscriber(
+            self,
             Image,
-            '/target/image',
-            self.imageCallback,
-            qos_profile_sensor_data)
-        
-        self.depth_image_ = self.create_subscription(
+            'image',qos_profile=sensor_qos_profile)
+        self.depth_sub = message_filters.Subscriber(
+            self,
             Image,
-            '/target/depth_image',
-            self.depthCallback,
-            qos_profile_sensor_data)
+            'depth_image',qos_profile=sensor_qos_profile)
         
+        self.imu_sub = message_filters.Subscriber(
+            self,
+            Imu,
+            '/target/mavros/imu/data_raw',qos_profile=sensor_qos_profile)
+        
+        self.gps_sub = message_filters.Subscriber(
+            self,
+            NavSatFix,
+            '/target/mavros/global_position/raw/fix',qos_profile=sensor_qos_profile)
+
+        self.time_synchronizer = ApproximateTimeSynchronizer(
+            [self.odom_sub, self.rgb_sub, self.depth_sub, self.imu_sub, self.gps_sub],
+            self.QUEUE_SIZE,
+            slop=0.15  
+        )
+
+        self.time_synchronizer.registerCallback(self.dataCallback)
+
         self.vehicle_path_pub_ = self.create_publisher(Path, 'offboard_visualizer/vehicle_path', 10)
         self.setpoint_path_pub_ = self.create_publisher(Path, 'offboard_visualizer/setpoint_path', 10)
 
         self.setopint_pub_ = self.create_publisher(PositionTarget, 'mavros/setpoint_raw/local', qos_profile_sensor_data)
 
-        # Setpoint frequency
-        timer_period = 0.02  # seconds
-        self.cmd_timer_ = self.create_timer(timer_period, self.cmdloopCallback)
 
         self.offboard_setpoint_counter_ = 0
 
@@ -177,18 +226,18 @@ class OffboardControl(Node):
     def vehicleStatusCallback(self, msg: State):
         self.is_armed_ = msg.armed
 
-    def odomCallback(self, msg: Odometry):
-        self.odom_ = msg
+    # def odomCallback(self, msg: Odometry):
+    #     self.odom_ = msg
 
-    def imageCallback(self, msg: Image):
-        self.rgb_image_ = msg
-        cv_image = CvBridge().imgmsg_to_cv2(msg, "bgr8")  # Convert ROS Image message to OpenCV format
-        self.save_image(cv_image, self.rgb_img_directory_, "rgb")
+    # def imageCallback(self, msg: Image):
+    #     self.rgb_image_ = msg
+    #     cv_image = CvBridge().imgmsg_to_cv2(msg, "bgr8")  # Convert ROS Image message to OpenCV format
+    #     self.save_image(cv_image, self.rgb_img_directory_, "rgb")
     
-    def depthCallback(self, msg: Image):
-        self.depth_image_ = msg
-        cv_image = CvBridge().imgmsg_to_cv2(msg, "passthrough")  # Convert ROS Image message to OpenCV format
-        self.save_image(cv_image, self.depth_img_directory_, "depth")
+    # def depthCallback(self, msg: Image):
+    #     self.depth_image_ = msg
+    #     cv_image = CvBridge().imgmsg_to_cv2(msg, "passthrough")  # Convert ROS Image message to OpenCV format
+    #     self.save_image(cv_image, self.depth_img_directory_, "depth")
    
     def save_image(self, cv_image, directory, image_type):
         if image_type == "rgb":
@@ -197,6 +246,81 @@ class OffboardControl(Node):
             image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
         cv2.imwrite(os.path.join(directory, image_name), cv_image)   
     
+    def dataCallback(self, odom_msg, img_msg, depth_msg, imu_msg, gps_msg):
+        self.odom_ = odom_msg
+        self.rgb_image_ = img_msg
+        self.depth_image_ = depth_msg
+        self.imu_ = imu_msg
+        self.gps_ = gps_msg
+        current_depth_timestamp = (depth_msg.header.stamp.sec) + \
+                                float(depth_msg.header.stamp.nanosec)/1e9
+        current_img_timestamp = (img_msg.header.stamp.sec) + \
+                                float(img_msg.header.stamp.nanosec)/1e9
+        current_odom_timestamp = (odom_msg.header.stamp.sec) + \
+                                float(odom_msg.header.stamp.nanosec)/1e9
+        current_imu_timestamp = (imu_msg.header.stamp.sec) + \
+                                float(imu_msg.header.stamp.nanosec)/1e9
+        current_gps_timestamp = (gps_msg.header.stamp.sec) + \
+                                float(gps_msg.header.stamp.nanosec)/1e9                        
+
+        threshold = 0.001
+        if abs(current_depth_timestamp - self.previous_depth_timestamp or 
+            current_img_timestamp - self.previous_img_timestamp or 
+            current_odom_timestamp - self.previous_odom_timestamp or
+            current_imu_timestamp - self.previous_imu_timestamp or
+            current_gps_timestamp - self.previous_gps_timestamp) >= threshold:
+
+            t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
+            tx = self.odom_.pose.pose.position.x
+            ty = self.odom_.pose.pose.position.y
+            tz = self.odom_.pose.pose.position.z
+
+            orientation = imu_msg.orientation.w
+            angular_velocity_x = imu_msg.angular_velocity.x
+            angular_velocity_y = imu_msg.angular_velocity.y
+            angular_velocity_z = imu_msg.angular_velocity.z
+
+            linear_acceleration_x = imu_msg.linear_acceleration.x
+            linear_acceleration_y = imu_msg.linear_acceleration.y
+            linear_acceleration_z = imu_msg.linear_acceleration.z
+            
+            latitude = gps_msg.latitude
+            longitude = gps_msg.longitude
+            altitude = gps_msg.altitude
+            
+            self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
+            self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
+
+            cv_image = CvBridge().imgmsg_to_cv2(self.rgb_image_, "bgr8")
+            self.save_image(cv_image, self.rgb_img_directory_, "rgb")
+
+            cv_image = CvBridge().imgmsg_to_cv2(self.depth_image_, "passthrough")
+            self.save_image(cv_image, self.depth_img_directory_, "depth")
+
+            # Save actual position in CSV file only if the timestamp condition is met
+            self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name,
+                                        orientation, angular_velocity_x,angular_velocity_y, angular_velocity_z,
+                                        linear_acceleration_x, linear_acceleration_y, linear_acceleration_z, 
+                                        latitude, longitude, altitude])
+
+            self.offboard_setpoint_counter_ += 1
+
+
+        # Log the unique timestamps
+        self.get_logger().info(f"Depth timestamp: {current_depth_timestamp}")
+        self.get_logger().info(f"Image timestamp: {current_img_timestamp}")
+        self.get_logger().info(f"Odom timestamp: {current_odom_timestamp}")
+
+
+        # Update previous timestamps
+        self.previous_depth_timestamp = current_depth_timestamp
+        self.previous_img_timestamp = current_img_timestamp
+        self.previous_odom_timestamp = current_odom_timestamp
+        self.previous_imu_timestamp = current_imu_timestamp
+        self.previous_gps_timestamp = current_gps_timestamp 
+
+
+
     def create_arrow_marker(self, id, tail, vector):
         msg = Marker()
         msg.action = Marker.ADD
@@ -275,7 +399,7 @@ class OffboardControl(Node):
             point=np.array([0.0, 0.0, 1.0])
             dist = np.sqrt((point[0] - self.odom_.pose.pose.position.x)**2 + (point[1] - self.odom_.pose.pose.position.y)**2 + (point[2] - self.odom_.pose.pose.position.z)**2)
             if (dist > 0.5):
-                self.get_logger().info(f'Going to the (0,0,1) position.')
+                self.get_logger().info(f'Going to the (0,0,1) HOME position.')
 
             setpoint_msg = PositionTarget()
             setpoint_msg.header.stamp = self.get_clock().now().to_msg()
@@ -317,7 +441,10 @@ class OffboardControl(Node):
             self.file_ = open(self.csv_file_, 'w', newline='')
             self.csv_writer_ = csv.writer(self.file_)
             # Write the header
-            self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz"])
+            self.csv_writer_.writerow(["timestamp", "tx", "ty", "tz", "image_name", "depth_image", "orientation",
+                                  "angular_vel_x", "angular_vel_y", "angular_vel_z",
+                                  "linear_acc_x", "linear_acc_y", "linear_acc_z",
+                                  "latitude", "longitude", "altitude"]) 
             return
 
         if not self.reached_first_point_:
@@ -342,7 +469,7 @@ class OffboardControl(Node):
 
             self.setopint_pub_.publish(setpoint_msg)
 
-            if dist < 0.5:
+            if dist < 1.0:
                 self.first_point_t_ = Clock().now().nanoseconds/1000/1000/1000
                 self.reached_first_point_ = True
             self.traj_start_t_ = time()
@@ -399,17 +526,23 @@ class OffboardControl(Node):
 
         self.setpoint_path_pub_.publish(self.setpoint_path_msg_)
 
-        t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
-        tx = self.odom_.pose.pose.position.x
-        ty = self.odom_.pose.pose.position.y
-        tz = self.odom_.pose.pose.position.z
+        # t = self.odom_.header.stamp.sec + self.odom_.header.stamp.nanosec * 1e-9
+        # tx = self.odom_.pose.pose.position.x
+        # ty = self.odom_.pose.pose.position.y
+        # tz = self.odom_.pose.pose.position.z
 
-        self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
-        self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
-
-        # TODO Save actual poision in CSV file
-        self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name])
-        self.offboard_setpoint_counter_ += 1
+        # self.rgb_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_rgb.png"
+        # self.depth_image_name = f"{self.file_name_}_{self.traj_counter_}_{self.offboard_setpoint_counter_}_depth.png"
+        
+        # cv_image = CvBridge().imgmsg_to_cv2(self.rgb_image_, "bgr8")  
+        # self.save_image(cv_image, self.rgb_img_directory_, "rgb")
+        
+        # cv_image = CvBridge().imgmsg_to_cv2(self.depth_image_, "passthrough")  
+        # self.save_image(cv_image, self.depth_img_directory_, "depth")
+       
+        # # TODO Save actual poision in CSV file
+        # self.csv_writer_.writerow([t, tx, ty, tz, self.rgb_image_name, self.depth_image_name])
+        # self.offboard_setpoint_counter_ += 1
 
 
 def main(args=None):
@@ -425,4 +558,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
