@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Abdelkader"
+  given-names: "Mohamed"
+  orcid: "https://orcid.org/0000-0002-0518-852X"
+- family-names: "Gabr"
+  given-names: "Khaled"
+  orcid: "https://orcid.org/0009-0009-8275-8301"
+title: "uav_dataset_generation_ros"
+version: 1.0.0
+date-released: 2024-01-31
+url: "https://github.com/mzahana/uav_dataset_generation_ros"
